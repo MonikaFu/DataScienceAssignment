@@ -7,6 +7,7 @@ Created on Sun Mar  4 13:45:40 2018
 
 import pandas as pd
 import os
+import numpy as np
 #import datetime
 
 # home laptop
@@ -67,6 +68,9 @@ for id in unique_shop_ids:
             new_index = pd.MultiIndex.from_tuples(tuples)
             id_data=id_data.reindex(new_index)
             id_data['weekly_sales']=id_data['weekly_sales'].fillna(mean_sales)
+            #add the lagged sales data
+            id_data['weekly_sales_lag1']=id_data['weekly_sales'].shift()
+            id_data['weekly_sales_lag2']=id_data['weekly_sales'].shift(2)
             id_data['store_id']=id
             id_data.reset_index(inplace=True)
             #id_data.set_index(['store_id','level_0','level_1'],inplace=True)
@@ -75,26 +79,63 @@ for id in unique_shop_ids:
             else:
                 sales_data_fill_mis=pd.concat([sales_data_fill_mis,id_data])
 
+sales_data_fill_mis.reset_index(inplace=True)
+sales_data_fill_mis.drop(['index'],axis=1,inplace=True)
+
 # add the information on number of universities nearby
-sales_data=sales_data.join(education_data.set_index('store_id'),on='store_id')
-    
+sales_data_fill_mis=sales_data_fill_mis.join(education_data.set_index('store_id'),on='store_id')
+sales_data_fill_mis.dropna(subset=['weekly_sales_lag1','weekly_sales_lag2'],inplace=True)
+
+final_shop_ids = sales_data_fill_mis['store_id'].drop_duplicates()
+all_ids = final_shop_ids.values
+
+import random
+random.shuffle(all_ids)
+
+training_ids = all_ids[0:round(len(all_ids)*0.8)]
+test_ids = all_ids[(round(len(all_ids)*0.8)+1):-1]
+
+trainig_set = sales_data_fill_mis[sales_data_fill_mis['store_id'].isin(training_ids)]
+test_set = sales_data_fill_mis[sales_data_fill_mis['store_id'].isin(test_ids)]
+
+# fit a liner regression model to lagged variables
+import statsmodels.api as sm
+model = sm.OLS(trainig_set['weekly_sales'], trainig_set[['weekly_sales_lag1','weekly_sales_lag2','num_universities']]).fit()
+predictions = model.predict(test_set[['weekly_sales_lag1','weekly_sales_lag2','num_universities']]) # make the predictions by the model
+
+# Print out the statistics
+model.summary()
+
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots()
+ax.plot(list(range(1,test_set.shape[0]+1)),predictions, 'o', label="Predictions")
+ax.plot(list(range(1,test_set.shape[0]+1)),test_set['weekly_sales'], 'r-', label="True")
+ax.legend(loc="best");
+
+import sklearn.metrics as sklmet
+
+sklmet.mean_absolute_error(test_set['weekly_sales'],predictions)
+sklmet.mean_squared_error(test_set['weekly_sales'],predictions)
+sklmet.r2_score(test_set['weekly_sales'],predictions)
+
 # count the number of shops within 5 km for each shop id
 nr_shops_near=distance_data.groupby(['store_id_1'])['distance'].count()
-nr_shops_near.name='nr_shops_near'
 
-# calculate the mean distance to other shops that are within 5 km radius
-mean_dist_to_shops = distance_data.groupby(['store_id_1'])['distance'].mean()
-mean_dist_to_shops.name='mean_dist_to_shops'
+nr_shops_near2=distance_data.groupby(['store_id_2'])['distance'].count()
 
-# calculate the minimal distance to a nearby shop
-closest_shop_dist = distance_data.groupby(['store_id_1'])['distance'].min()
-closest_shop_dist.name='closest_shop_dist'
+#check if there are ids that appear in both store_id1 and 2
+nr_shops_near_fin=pd.concat([nr_shops_near, nr_shops_near2])
+nr_shops_near_fin=nr_shops_near_fin.to_frame()
+nr_shops_near_fin.reset_index(inplace=True)
+nr_shops=nr_shops_near_fin.groupby(['index'])['distance'].sum()
 
-sales_data = sales_data.join(nr_shops_near,on='store_id')
-sales_data['nr_shops_near']=sales_data['nr_shops_near'].fillna(0)
+# check how are the store_ids1 and 2 overlapping
+test2=nr_shops_near_fin.index.values
+[test3, test_counts]=np.unique(test2,return_counts=True)
 
-sales_data = sales_data.join(mean_dist_to_shops,on='store_id')
-
-sales_data = sales_data.join(closest_shop_dist,on='store_id')
+sales_data_fill_mis = sales_data_fill_mis.join(nr_shops,on='store_id')
+sales_data_fill_mis.rename(columns={'distance':'nr_shops_near'},inplace=True)
+sales_data_fill_mis['nr_shops_near']=sales_data_fill_mis['nr_shops_near'].fillna(0)
 
 
